@@ -1,0 +1,621 @@
+#include <core.p4>
+#include <tna.p4>
+
+typedef bit<48> mac_addr_t;
+typedef bit<32> ipv4_addr_t;
+typedef bit<16> ether_type_t;
+const ether_type_t ETHERTYPE_IPV4 = 16w0x0800;
+
+
+typedef bit<8> ip_protocol_t;
+const ip_protocol_t IP_PROTOCOLS_TCP = 6;
+const ip_protocol_t IP_PROTOCOLS_UDP = 17;
+
+
+header ethernet_h {
+    mac_addr_t dst_addr;
+    mac_addr_t src_addr;
+    bit<16> ether_type;
+}
+
+header ipv4_h {
+    bit<4> version;
+    bit<4> ihl;
+    bit<6> diffserv;
+    bit<2> ecn;
+    bit<16> total_len;
+    bit<16> identification;
+    bit<3> flags;
+    bit<13> frag_offset;
+    bit<8> ttl;
+    bit<8> protocol;
+    bit<16> hdr_checksum;
+    ipv4_addr_t src;
+    ipv4_addr_t dst;
+}
+
+header tcp_h {
+    bit<16> src_port;
+    bit<16> dst_port;
+    bit<32> seq_no;
+    bit<32> ack_no;
+    bit<4> data_offset;
+    bit<4> res;
+    bit<8> flags;
+    bit<16> window;
+    bit<16> checksum;
+    bit<16> urgent_ptr;
+}
+
+header udp_h {
+    bit<16> src_port;
+    bit<16> dst_port;
+    bit<16> hdr_lenght;
+    bit<16> checksum;
+}
+
+struct header_t {
+    ethernet_h ethernet;
+    ipv4_h ipv4;
+    tcp_h tcp;
+    udp_h udp;
+}
+
+//== Metadata definition
+
+struct temp_metadata_t {
+    {% for id in range(CONF[0][3]) %}
+    bit<32> temp{{id}};
+    {% endfor %}
+}
+
+struct key_metadat_t {
+    bit<16> filter;
+    bit<16> hash_index;
+    {% for id in range(CONF[0][3]) %}
+    bit<16> rr{{id}}_register_index;
+    {% endfor %}
+}
+
+struct param_metadata_t {
+    {% for id in range(CONF[0][3]) %}
+    bit<1> rr{{id}}_param0;
+    bit<32> rr{{id}}_param1;
+    {% endfor %}
+}
+
+struct ig_metadata_t {
+    temp_metadata_t temp;
+    key_metadat_t key;
+    param_metadata_t param;
+}
+struct eg_metadata_t {
+
+}
+
+//== Parser and deparser
+
+parser TofinoIngressParser(
+        packet_in pkt,
+        inout ig_metadata_t ig_md,
+        out ingress_intrinsic_metadata_t ig_intr_md) {
+    state start {
+        pkt.extract(ig_intr_md);
+        transition select(ig_intr_md.resubmit_flag) {
+            1 : parse_resubmit;
+            0 : parse_port_metadata;
+        }
+    }
+
+    state parse_resubmit {
+        // Parse resubmitted packet here.
+        pkt.advance(64);
+        transition accept;
+    }
+
+    state parse_port_metadata {
+        pkt.advance(64);  //tofino 1 port metadata size
+        transition accept;
+    }
+}
+
+parser EtherIPTCPUDPParser(
+    packet_in pkt,
+    out header_t hdr) {
+    state start {
+        transition parse_ethernet;
+    }
+    state parse_ethernet {
+        pkt.extract(hdr.ethernet);
+        transition select (hdr.ethernet.ether_type) {
+            ETHERTYPE_IPV4 : parse_ipv4;
+            default : reject;
+        }
+    }
+    state parse_ipv4 {
+        pkt.extract(hdr.ipv4);
+        transition select(hdr.ipv4.protocol) {
+            IP_PROTOCOLS_TCP : parse_tcp;
+            IP_PROTOCOLS_UDP : parse_udp;
+            default : reject;
+        }
+    }
+    state parse_tcp {
+        pkt.extract(hdr.tcp);
+        transition accept;
+    }
+    state parse_udp {
+        pkt.extract(hdr.udp);
+        transition select(hdr.udp.dst_port) {
+            default: accept;
+        }
+    }
+}
+
+parser SwitchIngressParser(
+        packet_in pkt,
+        out header_t hdr,
+        out ig_metadata_t ig_md,
+        out ingress_intrinsic_metadata_t ig_intr_md) {
+
+    TofinoIngressParser() tofino_parser;
+    EtherIPTCPUDPParser() layer4_parser;
+
+    state start {
+        tofino_parser.apply(pkt, ig_md, ig_intr_md);
+        layer4_parser.apply(pkt, hdr);
+        transition accept;
+    }
+}
+
+control SwitchIngressDeparser(
+        packet_out pkt,
+        inout header_t hdr,
+        in ig_metadata_t ig_md,
+        in ingress_intrinsic_metadata_for_deparser_t ig_intr_dprsr_md) {
+    apply {
+        pkt.emit(hdr);
+    }
+}
+
+parser SwitchEgressParser(
+        packet_in pkt,
+        out header_t hdr,
+        out eg_metadata_t ig_md,
+        out egress_intrinsic_metadata_t eg_intr_md) {
+
+    EtherIPTCPUDPParser() layer4_parser;
+    state start {
+        pkt.extract(eg_intr_md);
+        layer4_parser.apply(pkt, hdr);
+        transition accept;
+    }
+}
+
+control SwitchEgressDeparser(
+        packet_out pkt,
+        inout header_t hdr,
+        in eg_metadata_t ig_md,
+        in egress_intrinsic_metadata_for_deparser_t eg_intr_md_for_dprsr) {
+    apply {
+        pkt.emit(hdr);
+    }
+}
+
+//== Control logic
+control FS(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md) {
+
+        action set_filter(bit<16> filterID) {ig_md.key.filter = filterID;}
+
+
+        table tb_filter_setting {
+            key = {
+                hdr.ipv4.src : ternary;
+                hdr.ipv4.dst : ternary;
+                //you can add or delete other field here, but must use ternary match
+            }
+            actions = {
+                set_filter;
+                NoAction;
+            }
+            default_action = NoAction();
+        }
+        apply {
+            tb_filter_setting.apply();
+        }
+}
+
+control HI(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md) {
+
+        //you can add or delete other field here
+        Hash<bit<16>>(HashAlgorithm_t.CRC32) hash_0;
+        Hash<bit<16>>(HashAlgorithm_t.CRC32) hash_1;
+
+        action set_index_hdripv4src() {
+            ig_md.key.hash_index = hash_0.get({hdr.ipv4.src});
+        }
+
+        action set_index_hdripv4dst() {
+            ig_md.key.hash_index = hash_1.get({hdr.ipv4.dst});
+        }
+
+        action set_index_manually(bit<16> index) {
+            ig_md.key.hash_index = index;
+        }
+
+        table tb_hashed_index_setting {
+            key = {ig_md.key.filter : exact;}
+            actions = {
+                set_index_hdripv4src;
+                set_index_hdripv4dst;
+                set_index_manually;
+                NoAction;
+            }
+            default_action = NoAction();
+        }
+        apply {
+            tb_hashed_index_setting.apply();
+        }
+}
+
+control AT(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md) {
+
+        {% for id in range(CONF[0][3]) %}
+        action rr{{id}}_shift_1() {ig_md.key.rr{{id}}_register_index = ig_md.key.hash_index >> 1;}
+        action rr{{id}}_shift_2() {ig_md.key.rr{{id}}_register_index = ig_md.key.hash_index >> 2;}
+        action rr{{id}}_shift_3() {ig_md.key.rr{{id}}_register_index = ig_md.key.hash_index >> 3;}
+        action rr{{id}}_add(bit<16> i) {ig_md.key.rr{{id}}_register_index = ig_md.key.hash_index + i;}
+        {% endfor %}
+
+        table tb_index_shift {
+            key = {ig_md.key.filter : exact;}
+            actions = {
+                NoAction;
+                {% for id in range(CONF[0][3]) %}
+                rr{{id}}_shift_1;
+                rr{{id}}_shift_2;
+                rr{{id}}_shift_3;
+                {% endfor %}
+            }
+            default_action = NoAction();
+        }
+
+        table tb_index_add {
+            key = {ig_md.key.filter : exact;}
+            actions = {
+                NoAction;
+                {% for id in range(CONF[0][3]) %}
+                rr{{id}}_add;
+                {% endfor %}
+            }
+            default_action = NoAction();
+        }
+
+        apply {
+            tb_index_shift.apply();
+            tb_index_add.apply();
+        }
+}
+
+control PS(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md) {
+
+        {% for id in range(CONF[0][3]) %}
+        action set_{{id}}_0(bit<1> p) {ig_md.param.rr{{id}}_param0 = p;}
+        action set_{{id}}_1(bit<32> p) {ig_md.param.rr{{id}}_param1 = p;}
+        {% endfor %}
+
+        table tb_parameter_setting0 {
+            key = {ig_md.key.filter : exact;}
+            actions = {
+                {% for id in range(CONF[0][3]) %}
+                set_{{id}}_0;
+                {% endfor %}
+                NoAction;
+            }
+            default_action = NoAction();
+        }
+
+        table tb_parameter_setting1 {
+            key = {ig_md.key.filter : exact;}
+            actions = {
+                {% for id in range(CONF[0][3]) %}
+                set_{{id}}_1;
+                {% endfor %}
+                NoAction;
+            }
+            default_action = NoAction();
+        }
+        apply {
+            tb_parameter_setting0.apply();
+            tb_parameter_setting1.apply();
+        }
+}
+
+control KS(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md) {
+
+        {% for id in range(CONF[0][3]) %}
+        action hdripv4src_temp{{id}}() {ig_md.temp.temp{{id}} = hdr.ipv4.src;}
+        action hdripv4dst_temp{{id}}() {ig_md.temp.temp{{id}} = hdr.ipv4.dst;}
+        {% endfor %}
+
+        //you can add other key here
+
+        table tb_key_selection {
+            key = {ig_md.key.filter : exact;}
+            actions = {
+                {% for id in range(CONF[0][3]) %}
+                hdripv4src_temp{{id}};
+                hdripv4dst_temp{{id}};
+                {% endfor %}
+                NoAction;
+            }
+            default_action = NoAction();
+        }
+        apply {
+            tb_key_selection.apply();
+        }
+}
+
+control HM(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md) {
+
+        {% for id in range(CONF[0][3]) %}
+        action hdripv4src_temp{{id}}() {hdr.ipv4.src = ig_md.temp.temp{{id}};}
+        action hdripv4dst_temp{{id}}() {hdr.ipv4.dst = ig_md.temp.temp{{id}};}
+        {% endfor %}
+
+
+        table tb_header_modifier {
+            key = {ig_md.key.filter : exact;}
+            actions = {
+
+                {% for id in range(CONF[0][3]) %}
+                hdripv4src_temp{{id}};
+                hdripv4dst_temp{{id}};
+                {% endfor %}
+
+                NoAction;
+            }
+            default_action = NoAction();
+        }
+        apply {
+            tb_header_modifier.apply();
+        }
+}
+
+control RR(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md) {
+
+        {% for id in range(CONF[0][3]) %}
+
+        Register<bit<32>, _>(65536) rr{{id}}_register;
+        RegisterAction<bit<32>, _, bit<32>>(rr{{id}}_register) rr{{id}}_op_add_del = {
+            void apply(inout bit<32> value, out bit<32> result) {
+                if ( ig_md.param.rr{{id}}_param0 == 0) {
+                    value = value + ig_md.param.rr{{id}}_param1;
+                }
+                else {
+                    value = value - ig_md.param.rr{{id}}_param1;
+                }
+                result = value;
+            }
+        };
+
+        RegisterAction<bit<32>, _, bit<32>>(rr{{id}}_register) rr{{id}}_op_and_or = {
+            void apply(inout bit<32> value, out bit<32> result) {
+                if ( ig_md.param.rr{{id}}_param0 == 0) {
+                    value = value & ig_md.param.rr{{id}}_param1;
+                }
+                else {
+                    value = value | ig_md.param.rr{{id}}_param1;
+                }
+                result = value;
+            }
+        };
+
+        RegisterAction<bit<32>, _, bit<32>>(rr{{id}}_register) rr{{id}}_op_read_write = {
+            void apply(inout bit<32> value, out bit<32> result) {
+                if ( ig_md.param.rr{{id}}_param0 == 1) {
+                    value = ig_md.param.rr{{id}}_param1;
+                }
+                result = value;
+            }
+        };
+
+        {% if CONF[1][0] == 1 %}
+            {% for j in range(CONF[0][3]) %}
+                {% for k in range(CONF[0][3]) %}
+                    {% if j < k and j != id and k != id %}
+        action add_{{id}}_{{j}}_{{k}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{j}} + ig_md.temp.temp{{k}};}
+                    {% endif %}
+                {% endfor %}
+            {% endfor %}
+        {% endif %}
+        {% if CONF[1][1] == 1 %}
+            {% for j in range(CONF[0][3]) %}
+                {% for k in range(CONF[0][3]) %}
+                    {% if j != id and k != id %}
+        action del_{{id}}_{{j}}_{{k}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{j}} - ig_md.temp.temp{{k}};}
+                    {% endif %}
+                {% endfor %}
+            {% endfor %}
+        {% endif %}
+        {% if CONF[1][2] == 1 %}
+            {% for j in range(CONF[0][3]) %}
+                {% for k in range(CONF[0][3]) %}
+                    {% if j < k and j != id and k != id %}
+        action and_{{id}}_{{j}}_{{k}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{j}} & ig_md.temp.temp{{k}};}
+                    {% endif %}
+                {% endfor %}
+            {% endfor %}
+        {% endif %}
+        {% if CONF[1][3] == 1 %}
+            {% for j in range(CONF[0][3]) %}
+                {% for k in range(CONF[0][3]) %}
+                    {% if j < k and j != id and k != id %}
+        action or_{{id}}_{{j}}_{{k}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{j}} | ig_md.temp.temp{{k}};}
+                    {% endif %}
+                {% endfor %}
+            {% endfor %}
+        {% endif %}
+        {% if CONF[1][4] == 1 %}
+            {% for j in range(CONF[0][3]) %}
+        action not_{{id}}_{{j}}() {ig_md.temp.temp{{id}} = ~ig_md.temp.temp{{j}};}
+            {% endfor %}
+        {% endif %}
+        {% if CONF[1][5] == 1 %}
+            {% for j in range(CONF[0][3]) %}
+                {% if j != id %}
+        action ass_{{id}}_{{j}}() {ig_md.temp.temp{{id}} = ~ig_md.temp.temp{{j}};}
+                {% endif %}
+            {% endfor %}
+        {% endif %}
+
+        action rr{{id}}_reg_op0() {
+            rr{{id}}_op_add_del.execute(ig_md.key.rr{{id}}_register_index);
+        }
+        action rr{{id}}_reg_op1() {
+            rr{{id}}_op_and_or.execute(ig_md.key.rr{{id}}_register_index);
+        }
+        action rr{{id}}_reg_op2() {
+            rr{{id}}_op_read_write.execute(ig_md.key.rr{{id}}_register_index);
+        }
+        table tb_rr{{id}} {
+            key = {ig_md.key.filter : exact;}
+            actions = {
+                NoAction;
+                {% if CONF[1][0] == 1 %}
+                    {% for j in range(CONF[0][3]) %}
+                        {% for k in range(CONF[0][3]) %}
+                            {% if j < k and j != id and k != id %}
+                add_{{id}}_{{j}}_{{k}}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if CONF[1][1] == 1 %}
+                    {% for j in range(CONF[0][3]) %}
+                        {% for k in range(CONF[0][3]) %}
+                            {% if j != id and k != id %}
+                del_{{id}}_{{j}}_{{k}}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if CONF[1][2] == 1 %}
+                    {% for j in range(CONF[0][3]) %}
+                        {% for k in range(CONF[0][3]) %}
+                            {% if j < k and j != id and k != id %}
+                and_{{id}}_{{j}}_{{k}}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if CONF[1][3] == 1 %}
+                    {% for j in range(CONF[0][3]) %}
+                        {% for k in range(CONF[0][3]) %}
+                            {% if j < k and j != id and k != id %}
+                or_{{id}}_{{j}}_{{k}}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if CONF[1][4] == 1 %}
+                    {% for j in range(CONF[0][3]) %}
+                not_{{id}}_{{j}}
+                    {% endfor %}
+                {% endif %}
+                {% if CONF[1][5] == 1 %}
+                    {% for j in range(CONF[0][3]) %}
+                        {% if j != id %}
+                ass_{{id}}_{{j}}
+                        {% endif %}
+                    {% endfor %}
+                {% endif %}
+                rr{{id}}_reg_op0;
+                rr{{id}}_reg_op1;
+                rr{{id}}_reg_op2;
+            }
+            default_action = NoAction();
+        }
+
+        {% endfor %}
+
+        apply {
+            {% for id in range(CONF[0][3])%}
+            tb_rr{{id}}.apply();
+            {% endfor %}
+        }
+
+}
+
+
+control SwitchIngress(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md,
+        in ingress_intrinsic_metadata_t ig_intr_md,
+        in ingress_intrinsic_metadata_from_parser_t ig_intr_prsr_md,
+        inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprsr_md,
+        inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md) {
+
+
+        FS() fs0;
+        HI() hi0;
+        AT() at0;
+        PS() ps0;
+        {% for id in range(CONF[0][2]) %}
+        KS() ks{{id}};
+        {% endfor %}
+        {% for id in range(CONF[0][4]) %}
+        HM() hm{{id}};
+        {% endfor %}
+        RR() rr;
+        apply {
+            fs0.apply(hdr, ig_md);
+            hi0.apply(hdr, ig_md);
+            at0.apply(hdr, ig_md);
+            ps0.apply(hdr, ig_md);
+            {% for id in range(CONF[0][2]) %}
+            ks{{id}}.apply(hdr, ig_md);
+            {% endfor %}
+            {% for id in range(CONF[0][4]) %}
+            hm{{id}}.apply(hdr, ig_md);
+            {% endfor %}
+        }
+}
+
+control SwitchEgress(
+        inout header_t hdr,
+        inout eg_metadata_t ig_md,
+        in egress_intrinsic_metadata_t eg_intr_md,
+        in egress_intrinsic_metadata_from_parser_t eg_intr_md_from_prsr,
+        inout egress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md,
+        inout egress_intrinsic_metadata_for_output_port_t eg_intr_oport_md) {
+        apply {
+
+        }
+
+}
+
+Pipeline(SwitchIngressParser(),
+         SwitchIngress(),
+         SwitchIngressDeparser(),
+         SwitchEgressParser(),
+         SwitchEgress(),
+         SwitchEgressDeparser()
+         ) pipe;
+
+Switch(pipe) main;
+

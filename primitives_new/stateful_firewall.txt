@@ -1,0 +1,16 @@
+//cycle0
+FS0.filter_setting(ig_intr_md.ingress_port, 0, 511, hdr.tcp.syn, 1, 1, 0, 0B11001000, 17)
+IS0.index_setting_hash(5_tuple, 0, 0, 17)
+AR3.register_write(1, 17)
+
+FS0.filter_setting(ig_intr_md.ingress_port, 1, 511, 0, 0B11001000, 18)
+IS0.index_setting_hash(5_tuple_swap, 0, 0, 18)
+AR3.register_read(0, 18)
+HM0.header_modifier(hdr.rr.info, ig_md.param.rr3_param1, 18)
+rec(18, 0)
+
+//cycle1
+FS0.filter_setting(ig_intr_md.ingress_port, 1, 511, hdr.rr.info, 1, 0, 1, 0B11001001, 19)
+AR0.addi(0, 1, 19)
+HM0.header_modifier(ig_intr_dprsr_md.drop_ctl, 0, 19)
+rec(19, 1)

@@ -1,0 +1,178 @@
+//basic forward
+FS0.filter_setting(hdr.ipv4.dst, 1.1.1.1, 255.255.255.255, 0, 0B11001000, 1)
+FS0.filter_setting(hdr.ipv4.dst, 1.1.1.1, 255.255.255.255, 0, 0B11000100, 2)
+AR0.addi(0, 15, 1)
+AR0.addi(0, 16, 2)
+HM0.header_modifier(ig_intr_tm_md.ucast_egress_port, 0, 1)
+HM0.header_modifier(ig_intr_tm_md.ucast_egress_port, 0, 2)
+
+//basic tunnel (with primitives above)
+FS0.filter_setting(hdr.tunnel.dst_id, 123, 2147483648, 0, 0B10100000, 3)
+AR0.addi(0, 17, 3)
+HM0.header_modifier(ig_intr_tm_md.ucast_egress_port, 0, 3)
+
+//cacl
+FS0.filter_setting(hdr.cacl.op, 1, 255, 0, 0B10010000, 4)
+FS0.filter_setting(hdr.cacl.op, 2, 255, 0, 0B10010000, 5)
+FS0.filter_setting(hdr.cacl.op, 3, 255, 0, 0B10010000, 6)
+FS0.filter_setting(hdr.cacl.op, 4, 255, 0, 0B10010000, 7)
+FS0.filter_setting(hdr.cacl.op, 5, 255, 0, 0B10010000, 8)
+KS0.key_selection(hdr.cacl.opA, 1, 4)
+KS0.key_selection(hdr.cacl.opA, 1, 5)
+KS0.key_selection(hdr.cacl.opA, 1, 6)
+KS0.key_selection(hdr.cacl.opA, 1, 7)
+KS0.key_selection(hdr.cacl.opA, 1, 8)
+KS1.key_selection(hdr.cacl.opB, 2, 4)
+KS1.key_selection(hdr.cacl.opB, 2, 5)
+KS1.key_selection(hdr.cacl.opB, 2, 6)
+KS1.key_selection(hdr.cacl.opB, 2, 7)
+KS1.key_selection(hdr.cacl.opB, 2, 8)
+AR0.add(1, 2, 4)
+AR0.sub(1, 2, 5)
+AR0.and(1, 2, 6)
+AR0.or(1, 2, 7)
+AR0.xor(1, 2, 8)
+HM0.header_modifier(hdr.cacl.res, 0, 4)
+HM0.header_modifier(hdr.cacl.res, 0, 5)
+HM0.header_modifier(hdr.cacl.res, 0, 6)
+HM0.header_modifier(hdr.cacl.res, 0, 7)
+HM0.header_modifier(hdr.cacl.res, 0, 8)
+
+//ecn egress pipeline udp
+    //recirculation cycle 0 
+FS0.filter_setting(hdr.ipv4.dst, 1.1.1.1, 255.255.255.255, 0, 0B11000100, 9)
+KS0.key_selection(eg_intr_md.deq_timedelta, 0, 9)
+HM0.header_modifier(hdr.rr.info, 0, 9)
+rec(9, 0)
+
+    //recirculation cycle 1
+FS0.filter_setting(hdr.rr.info, 255.255.255.255, 128.0.0.0, 1, 0B11000101, 10)
+FS0.filter_setting(hdr.rr.info, 255.255.255.255, 64.0.0.0, 1, 0B11000101, 11)
+FS0.filter_setting(hdr.rr.info, 255.255.255.255, 32.0.0.0, 1, 0B11000101, 12)
+AR0.addi(0, 3, 10)
+AR0.addi(0, 3, 11)
+AR0.addi(0, 3, 12)
+HM0.header_modifier(hdr.ipv4.ecn, 0, 10)
+HM0.header_modifier(hdr.ipv4.ecn, 0, 11)
+HM0.header_modifier(hdr.ipv4.ecn, 0, 12)
+rec(10, 1)
+rec(11, 1)
+rec(12, 1)
+
+//load balance 
+    //cycle 0
+FS0.filter_setting(0, 0B11001000, 13)
+FS0.filter_setting(0, 0B11001000, 14)
+IS0.index_setting_hash(5_tuple, 0, 0, 1)
+KS0.key_selection(ig_md.key.hash_index0, 0, 13)
+KS0.key_selection(ig_md.key.hash_index0, 0, 14)
+HM0.header_modifier(hdr.rr.info, 0, 13)
+HM0.header_modifier(hdr.rr.info, 0, 14)
+rec(13, 0)
+rec(14, 0)
+
+    //cycle1
+FS0.filter_setting(hdr.rr.info, 0, 1, 1, 0B11001001, 15)
+FS0.filter_setting(hdr.rr.info, 1, 1, 1, 0B11001001, 16)
+AR0.addi(0, 15, 15)
+AR0.addi(0, 16, 16)
+HM0.header_modifier(ig_intr_tm_md.ucast_egress_port, 0, 15)
+HM0.header_modifier(ig_intr_tm_md.ucast_egress_port, 0, 16)
+
+//stateful firewall
+    //cycle0
+FS0.filter_setting(hdr.tcp.syn, 1, 1, ig_intr_md.ingress_port, 0, 511, 0, 0B11001000, 17)
+IS0.index_setting_hash(5_tuple, 0, 0, 17)
+AR3.register_write(1, 17)
+
+FS0.filter_setting(ig_intr_md.ingress_port, 1, 511, 0, 18)
+IS0.index_setting_hash(5_tuple_swap, 0, 0, 18)
+AR3.register_read(0, 18)
+HM0.header_modifier(hdr.rr.info, ig_md.param.rr3_param1, 18)
+rec(18, 0)
+
+    //cycle1
+FS0.filter_setting(ig_intr_md.ingress_port, 1, 511, hdr.rr.info, 1, 0, 1, 0B11001001, 19)
+AR0.addi(0, 1, 19)
+HM0.header_modifier(ig_intr_dprsr_md.drop_ctl, 0, 19)
+rec(19, 1)
+
+//netcache
+FS0.filter_setting(hdr.nc.op, 0, 255, hdr.nc.key, 123, 255.255.255.255, 0, 0B11000110, 20)
+IS0.index_setting_manually(123, 20)
+AR3.register_read(1, 20)
+HM0.header_modifier(hdr.nc.value, ig_md.param.rr3_param1, 20)
+
+
+FS0.filter_setting(hdr.nc.op, 1, 255, hdr.nc.key, 123, 255.255.255.255, 0, 0B11000110 21)
+IS0.index_setting_manually(123, 21)
+AR3.register_write(hdr.nc.value, 21)
+
+//CMS r=3
+FS0.filter_setting(hdr.ipv4.src, 11.22.33.43, 255.255.255.0, 0, 0B11000100, 22)
+IS0.index_setting_hash(5_tuple, 2, 0, 22)
+IS1.index_setting_hash(5_tuple, 2, 0, 22)
+IS2.index_setting_hash(5_tuple, 2, 0, 22)
+AR1.register_add(1, 22)
+AR2.register_add(1, 22)
+AR3.register_add(1, 22)
+
+//b.f. r=3
+FS0.filter_setting(hdr.ipv4.src, 11.22.44.43, 255.255.255.0, 0, 0B11000100, 23)
+IS0.index_setting_hash(5_tuple, 2, 16384, 23)
+IS1.index_setting_hash(5_tuple, 2, 16384, 23)
+IS2.index_setting_hash(5_tuple, 2, 16384, 23)
+AR1.register_or(1, 23)
+AR2.register_or(1, 23)
+AR3.register_or(1, 23)
+
+//SuMax r=3
+FS0.filter_setting(hdr.ipv4.src, 11.22.55.43, 255.255.255.0, 0, 0B11000100, 24)
+IS0.index_setting_hash(5_tuple, 2, 32768, 24)
+IS1.index_setting_hash(5_tuple, 2, 32768, 24)
+IS2.index_setting_hash(5_tuple, 2, 32768, 24)
+AR1.register_max(hdr.ipv4.total_len, 24)
+AR2.register_max(hdr.ipv4.total_len, 24)
+AR3.register_max(hdr.ipv4.total_len, 24)
+
+//HLL threshold = 256
+    //cycle0
+FS0.filter_setting(hdr.ipv4.src, 11.22.66.43, 255.255.255.0, 0, 0B11000100, 25)
+IS0.index_setting_hash(5_tuple, 0, 0, 25)
+KS0.key_selection(ig_md.key.hash_index0, 0, 25)
+HM0.header_modifier(hdr.rr.info, 0, 25)
+rec(1, 25)
+
+    //cycle1
+FS0.filter_setting(hdr.ipv4.src, 11.22.66.43, 255.255.255.0, hdr.rr.info, 0.0.0.0, 128.0.0.0, 1, 0B11000101, 26)
+FS0.filter_setting(hdr.ipv4.src, 11.22.66.43, 255.255.255.0, hdr.rr.info, 128.0.0.0, 192.0.0.0, 1, 0B11000101, 27)
+FS0.filter_setting(hdr.ipv4.src, 11.22.66.43, 255.255.255.0, hdr.rr.info, 192.0.0.0, 224.0.0.0, 1, 0B11000101, 28)
+FS0.filter_setting(hdr.ipv4.src, 11.22.66.43, 255.255.255.0, hdr.rr.info, 224.0.0.0, 240.0.0.0, 1, 0B11000101, 29)
+FS0.filter_setting(hdr.ipv4.src, 11.22.66.43, 255.255.255.0, hdr.rr.info, 240.0.0.0, 248.0.0.0, 1, 0B11000101, 30)
+FS0.filter_setting(hdr.ipv4.src, 11.22.66.43, 255.255.255.0, hdr.rr.info, 248.0.0.0, 252.0.0.0, 1, 0B11000101, 31)
+FS0.filter_setting(hdr.ipv4.src, 11.22.66.43, 255.255.255.0, hdr.rr.info, 252.0.0.0, 254.0.0.0, 1, 0B11000101, 32)
+FS0.filter_setting(hdr.ipv4.src, 11.22.66.43, 255.255.255.0, hdr.rr.info, 254.0.0.0, 255.0.0.0, 1, 0B11000101, 33)
+IS0.index_setting_hash(5_tuple, 2, 49152, 26)
+IS0.index_setting_hash(5_tuple, 2, 49152, 27)
+IS0.index_setting_hash(5_tuple, 2, 49152, 28)
+IS0.index_setting_hash(5_tuple, 2, 49152, 29)
+IS0.index_setting_hash(5_tuple, 2, 49152, 30)
+IS0.index_setting_hash(5_tuple, 2, 49152, 31)
+IS0.index_setting_hash(5_tuple, 2, 49152, 32)
+IS0.index_setting_hash(5_tuple, 2, 49152, 33)
+AR3.register_max(hdr.rr.info, 26)
+AR3.register_max(hdr.rr.info, 27)
+AR3.register_max(hdr.rr.info, 28)
+AR3.register_max(hdr.rr.info, 29)
+AR3.register_max(hdr.rr.info, 30)
+AR3.register_max(hdr.rr.info, 31)
+AR3.register_max(hdr.rr.info, 32)
+AR3.register_max(hdr.rr.info, 33)
+
+HM FS LOCK !!
+4.3节改
+
+
+
+
+

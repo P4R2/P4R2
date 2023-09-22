@@ -1,0 +1,20 @@
+//cycle0
+FS0.filter_setting(hdr.ipv4.dst, 11.22.66.43, 255.255.255.0, 0, 0B11000100, 25)
+IS0.index_setting_hash(5_tuple, 0, 0, 25)
+KS0.key_selection(ig_md.key.hash_index0, 0, 25)
+HM0.header_modifier(hdr.rr.info, 0, 25)
+rec(25, 1)
+
+//cycle1
+FS0.filter_setting(hdr.ipv4.dst, 11.22.66.43, 255.255.255.0, hdr.rr.info, 0.0.0.0, 128.0.0.0, 1, 0B11000101, 26)
+FS0.filter_setting(hdr.ipv4.dst, 11.22.66.43, 255.255.255.0, hdr.rr.info, 128.0.0.0, 192.0.0.0, 1, 0B11000101, 27)
+FS0.filter_setting(hdr.ipv4.dst, 11.22.66.43, 255.255.255.0, hdr.rr.info, 192.0.0.0, 224.0.0.0, 1, 0B11000101, 28)
+FS0.filter_setting(hdr.ipv4.dst, 11.22.66.43, 255.255.255.0, hdr.rr.info, 224.0.0.0, 240.0.0.0, 1, 0B11000101, 29)
+IS0.index_setting_hash(5_tuple, 2, 49152, 26)
+IS0.index_setting_hash(5_tuple, 2, 49152, 27)
+IS0.index_setting_hash(5_tuple, 2, 49152, 28)
+IS0.index_setting_hash(5_tuple, 2, 49152, 29)
+AR3.register_max(hdr.rr.info, 26)
+AR3.register_max(hdr.rr.info, 27)
+AR3.register_max(hdr.rr.info, 28)
+AR3.register_max(hdr.rr.info, 29)
