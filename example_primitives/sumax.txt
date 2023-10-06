@@ -1,7 +1,0 @@
-FS0.filter_setting(hdr.ipv4.dst, 11.22.55.43, 255.255.255.0, 0, 0B11000100, 24)
-IS0.index_setting_hash(5_tuple, 2, 32768, 24)
-IS1.index_setting_hash(5_tuple, 2, 32768, 24)
-IS2.index_setting_hash(5_tuple, 2, 32768, 24)
-AR1.register_max(hdr.ipv4.total_len, 24)
-AR2.register_max(hdr.ipv4.total_len, 24)
-AR3.register_max(hdr.ipv4.total_len, 24)
