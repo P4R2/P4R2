@@ -216,11 +216,11 @@ class entry_dumper():
             else:
                 self.tb.entry_del(self.switch_target, key_list)
             '''
-            print(info)
+            #print(info)
             key_list = [['ig_md.key.filter'+ str(i), 0, "exact"] for i in range(len(self.config["parsing_logic"]))]
             key_list[self.filtering_dict[info[1]]][1] = int(info[1])
             data_list = [[[info[2], int(info[3])]], info[4]]
-            print(key_list)
+            #print(key_list)
             if add:
                 self.runtime.entry_add(table_name, key_list, data_list)
                 if self.entry_info.get(table_name) is None:
