@@ -1,0 +1,7 @@
+FS0.filter_setting(hdr.ipv4.dst, 11.22.33.43, 255.255.255.0, 0, 0B11000100, 22)
+IS0.index_setting_hash(5_tuple, 2, 0, 22)
+IS1.index_setting_hash(5_tuple, 2, 0, 22)
+IS2.index_setting_hash(5_tuple, 2, 0, 22)
+AR1.register_add(1, 22)
+AR2.register_add(1, 22)
+AR3.register_add(1, 22)

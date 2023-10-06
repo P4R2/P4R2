@@ -1,327 +1,176 @@
 #include <core.p4>
 #include <tna.p4>
-
-typedef bit<48> mac_addr_t;
-typedef bit<32> ipv4_addr_t;
-typedef bit<16> ether_type_t;
-const ether_type_t ETHERTYPE_IPV4 = 16w0x0800;
-const ether_type_t ETHERTYPE_TUNNEL = 16w0x1111;
-const ether_type_t ETHERTYPE_CACL = 16w0x2222;
-
-
-typedef bit<8> ip_protocol_t;
-const ip_protocol_t IP_PROTOCOLS_TCP = 6;
-const ip_protocol_t IP_PROTOCOLS_UDP = 17;
-
-
-header ethernet_h {
-    mac_addr_t dst_addr;
-    mac_addr_t src_addr;
-    bit<16> ether_type;
-}
-
-header ipv4_h {
-    bit<4> version;
-    bit<4> ihl;
-    bit<6> diffserv;
-    bit<2> ecn;
-    bit<16> total_len;
-    bit<16> identification;
-    bit<1> rec;
-    bit<2> flags;
-    bit<13> frag_offset;
-    bit<8> ttl;
-    bit<8> protocol;
-    bit<16> hdr_checksum;
-    ipv4_addr_t src;
-    ipv4_addr_t dst;
-}
-
-header tcp_h {
-    bit<16> src_port;
-    bit<16> dst_port;
-    bit<32> seq_no;
-    bit<32> ack_no;
-    bit<4> data_offset;
-    bit<4> res;
-    bit<1> cwr;
-    bit<1> ece;
-    bit<1> urg;
-    bit<1> ack;
-    bit<1> psh;
-    bit<1> rst;
-    bit<1> syn;
-    bit<1> fin;
-    bit<16> window;
-    bit<16> checksum;
-    bit<16> urgent_ptr;
-}
-
-header udp_h {
-    bit<16> src_port;
-    bit<16> dst_port;
-    bit<16> hdr_lenght;
-    bit<16> checksum;
-}
-
-header nc_h {
-    bit<8> op;
-    bit<32> key;
-    bit<32> value;
-}
-
-header rr_h {
-    bit<8>  time;
-    bit<32> info;
-    bit<9> port;
-    bit<7> padding;
-}
-
-header tunnel_h {
-    bit<16> dst_id;
-}
-
-header cacl_h {
-    bit<32> opA;
-    bit<32> opB;
-    bit<32> res;
-    bit<8> op;
-}
-
-struct header_t {
-    ethernet_h ethernet;
-    ipv4_h ipv4;
-    tunnel_h tunnel;
-    cacl_h cacl;
-    tcp_h tcp;
-    udp_h udp;
-    nc_h nc;
-    rr_h rr;
-}
-
-//== Metadata definition
-
-struct temp_metadata_t {
-    bit<32> temp0;
-    bit<32> temp1;
-    bit<32> temp2;
-    bit<32> temp3;
-}
-
-struct key_metadat_t {
-    bit<16> filter;
-    bit<16> hash_index0;
-    bit<16> hash_index1;
-    bit<16> hash_index2;
-    bit<16> rr0_register_index;
-    bit<16> rr1_register_index;
-    bit<16> rr2_register_index;
-    bit<16> rr3_register_index;
-    bit<16> lock_id;
-    bit<8> bitmap;
-    bit<1> lock;
-}
-
-struct param_metadata_t {
-    bit<1> rr0_param0;
-    bit<32> rr0_param1;
-    bit<1> rr1_param0;
-    bit<32> rr1_param1;
-    bit<1> rr2_param0;
-    bit<32> rr2_param1;
-    bit<1> rr3_param0;
-    bit<32> rr3_param1;
-}
-
-struct ig_metadata_t {
-    temp_metadata_t temp;
-    key_metadat_t key;
-    param_metadata_t param; 
-    bit<1> useless_key; //this key is always 0 and used for exact match
-}
-struct eg_metadata_t {
-
-}
-
-//== Parser and deparser
-
-parser TofinoIngressParser(
-        packet_in pkt,
-        inout ig_metadata_t ig_md,
-        out ingress_intrinsic_metadata_t ig_intr_md) {
-    state start {
-        pkt.extract(ig_intr_md);
-        transition select(ig_intr_md.resubmit_flag) {
-            1 : parse_resubmit;
-            0 : parse_port_metadata;
-        }
-    }
-
-    state parse_resubmit {
-        // Parse resubmitted packet here.
-        pkt.advance(64);
-        transition accept;
-    }
-
-    state parse_port_metadata {
-        pkt.advance(64);  //tofino 1 port metadata size
-        transition accept;
-    }
-}
-
-parser EtherIPTCPUDPParser(
-    packet_in pkt,
-    inout ig_metadata_t ig_md,
-    out header_t hdr) {
-    state start {
-        ig_md.key.bitmap = 0;
-        transition parse_ethernet;
-    }
-    state parse_ethernet {
-        pkt.extract(hdr.ethernet);
-        ig_md.key.bitmap = ig_md.key.bitmap | 0x80;
-        transition select (hdr.ethernet.ether_type) {
-            ETHERTYPE_IPV4 : parse_ipv4;
-            ETHERTYPE_TUNNEL : parse_tunnel;
-            ETHERTYPE_CACL : parse_cacl;
-            default : reject;
-        }
-    }
-    state parse_ipv4 {
-        pkt.extract(hdr.ipv4);
-        ig_md.key.bitmap = ig_md.key.bitmap | 0x40;
-        transition select(hdr.ipv4.protocol) {
-            IP_PROTOCOLS_TCP : parse_tcp;
-            IP_PROTOCOLS_UDP : parse_udp;
-            default : reject;
-        }
-    }
-    state parse_tunnel {
-        ig_md.key.bitmap = ig_md.key.bitmap | 0x20;
-        pkt.extract(hdr.tunnel);
-        transition accept;
-    }
-    state parse_cacl {
-        ig_md.key.bitmap = ig_md.key.bitmap | 0x10;
-        pkt.extract(hdr.cacl);
-        transition accept;
-    }
-    state parse_tcp {
-        ig_md.key.bitmap = ig_md.key.bitmap | 0x08;
-        pkt.extract(hdr.tcp);
-        transition parse_rr_pre;
-    }
-    state parse_udp {
-        pkt.extract(hdr.udp);
-        ig_md.key.bitmap = ig_md.key.bitmap | 0x04;
-        transition select(hdr.udp.dst_port) {
-            8888 : parse_nc;
-            default: parse_rr_pre;
-        }
-    }
-    state parse_nc {
-        pkt.extract(hdr.nc);
-        ig_md.key.bitmap = ig_md.key.bitmap | 0x02;
-        transition parse_rr_pre;
-    }
-    state parse_rr_pre {
-        transition select(hdr.ipv4.rec) {
-            1 : parse_rr;
-            default: accept;
-        }
-    }
-    state parse_rr {
-        ig_md.key.bitmap = ig_md.key.bitmap | 0x01;
-        pkt.extract(hdr.rr);
-        transition accept;
-    }
-}
-
-parser SwitchIngressParser(
-        packet_in pkt,
-        out header_t hdr,
-        out ig_metadata_t ig_md,
-        out ingress_intrinsic_metadata_t ig_intr_md) {
-
-    TofinoIngressParser() tofino_parser;
-    EtherIPTCPUDPParser() layer4_parser;
-
-    state start {
-        tofino_parser.apply(pkt, ig_md, ig_intr_md);
-        layer4_parser.apply(pkt, ig_md, hdr);
-        transition accept;
-    }
-}
-
-control SwitchIngressDeparser(
-        packet_out pkt,
-        inout header_t hdr,
-        in ig_metadata_t ig_md,
-        in ingress_intrinsic_metadata_for_deparser_t ig_intr_dprsr_md) {
-    apply {
-        pkt.emit(hdr.ethernet);
-        pkt.emit(hdr.ipv4);
-        pkt.emit(hdr.tunnel);
-        pkt.emit(hdr.cacl);
-        pkt.emit(hdr.tcp);
-        pkt.emit(hdr.udp);
-        pkt.emit(hdr.rr);
-    }
-}
-
-parser SwitchEgressParser(
-        packet_in pkt,
-        out header_t hdr,
-        out eg_metadata_t eg_md,
-        out egress_intrinsic_metadata_t eg_intr_md) {
-
-    state start {
-        pkt.extract(eg_intr_md);
-        transition accept;
-    }
-}
-
-control SwitchEgressDeparser(
-        packet_out pkt,
-        inout header_t hdr,
-        in eg_metadata_t eg_md,
-        in egress_intrinsic_metadata_for_deparser_t eg_intr_md_for_dprsr) {
-    apply {
-        pkt.emit(hdr);
-    }
-}
-
+#include "parsers.p4"
 //== Control logic
 control FS(
         inout header_t hdr,
         inout ig_metadata_t ig_md,
         in ingress_intrinsic_metadata_t ig_intr_md) {
 
-        action set_filter(bit<16> filterID) {ig_md.key.filter = filterID;}
+        action set_filter0(bit<16> filterID) {ig_md.key.filter0 = filterID;}
+        action set_filter1(bit<16> filterID) {ig_md.key.filter1 = filterID;}
+        action set_filter2(bit<16> filterID) {ig_md.key.filter2 = filterID;}
+        action set_filter3(bit<16> filterID) {ig_md.key.filter3 = filterID;}
+        action set_filter4(bit<16> filterID) {ig_md.key.filter4 = filterID;}
+        action set_filter5(bit<16> filterID) {ig_md.key.filter5 = filterID;}
+        action set_filter6(bit<16> filterID) {ig_md.key.filter6 = filterID;}
 
-
-        table tb_filter_setting {
+        //parsing logic: ethernet -> ipv4 -> tcp 
+        table tb_filter_setting0 {
             key = {
                 ig_intr_md.ingress_port : ternary;
                 hdr.ipv4.dst : ternary;
-                hdr.tunnel.dst_id : ternary;
-                hdr.cacl.op : ternary;
+                //hdr.tunnel.dst_id : ternary;
+                //hdr.cacl.op : ternary;
                 hdr.tcp.syn : ternary;
-                hdr.nc.key : ternary;
-                hdr.nc.op : ternary;
+                //hdr.nc.key : ternary;
+                //hdr.nc.op : ternary;
+                //hdr.rr.info: ternary;
+                //hdr.rr.time: exact;
+                ig_md.key.bitmap : exact;
+                //you can add or delete other field here
+            }
+            actions = {
+                set_filter0;
+                NoAction;
+            }
+            default_action = NoAction();
+        }
+
+        table tb_filter_setting1 {
+            key = {
+                ig_intr_md.ingress_port : ternary;
+                hdr.ipv4.dst : ternary;
+                //hdr.tunnel.dst_id : ternary;
+                //hdr.cacl.op : ternary;
+                hdr.tcp.syn : ternary;
+                //hdr.nc.key : ternary;
+                //hdr.nc.op : ternary;
                 hdr.rr.info: ternary;
                 hdr.rr.time: exact;
                 ig_md.key.bitmap : exact;
                 //you can add or delete other field here
             }
             actions = {
-                set_filter;
+                set_filter1;
                 NoAction;
             }
             default_action = NoAction();
         }
+
+        table tb_filter_setting2 {
+            key = {
+                ig_intr_md.ingress_port : ternary;
+                hdr.ipv4.dst : ternary;
+                //hdr.tunnel.dst_id : ternary;
+                //hdr.cacl.op : ternary;
+                //hdr.tcp.syn : ternary;
+                //hdr.nc.key : ternary;
+                //hdr.nc.op : ternary;
+                //hdr.rr.info: ternary;
+                //hdr.rr.time: exact;
+                ig_md.key.bitmap : exact;
+                //you can add or delete other field here
+            }
+            actions = {
+                set_filter2;
+                NoAction;
+            }
+            default_action = NoAction();
+        }
+
+        table tb_filter_setting3 {
+            key = {
+                ig_intr_md.ingress_port : ternary;
+                hdr.ipv4.dst : ternary;
+                //hdr.tunnel.dst_id : ternary;
+                //hdr.cacl.op : ternary;
+                //hdr.tcp.syn : ternary;
+                //hdr.nc.key : ternary;
+                //hdr.nc.op : ternary;
+                hdr.rr.info: ternary;
+                hdr.rr.time: exact;
+                ig_md.key.bitmap : exact;
+                //you can add or delete other field here
+            }
+            actions = {
+                set_filter3;
+                NoAction;
+            }
+            default_action = NoAction();
+        }
+
+        table tb_filter_setting4 {
+            key = {
+                ig_intr_md.ingress_port : ternary;
+                hdr.ipv4.dst : ternary;
+                //hdr.tunnel.dst_id : ternary;
+                //hdr.cacl.op : ternary;
+                //hdr.tcp.syn : ternary;
+                hdr.nc.key : ternary;
+                hdr.nc.op : ternary;
+                //hdr.rr.info: ternary;
+                //hdr.rr.time: exact;
+                ig_md.key.bitmap : exact;
+                //you can add or delete other field here
+            }
+            actions = {
+                set_filter4;
+                NoAction;
+            }
+            default_action = NoAction();
+        }
+
+        table tb_filter_setting5 {
+            key = {
+                ig_intr_md.ingress_port : ternary;
+                //hdr.ipv4.dst : ternary;
+                hdr.tunnel.dst_id : ternary;
+                //hdr.cacl.op : ternary;
+                //hdr.tcp.syn : ternary;
+                //hdr.nc.key : ternary;
+                //hdr.nc.op : ternary;
+                //hdr.rr.info: ternary;
+                //hdr.rr.time: exact;
+                ig_md.key.bitmap : exact;
+                //you can add or delete other field here
+            }
+            actions = {
+                set_filter5;
+                NoAction;
+            }
+            default_action = NoAction();
+        }
+
+        table tb_filter_setting6 {
+            key = {
+                ig_intr_md.ingress_port : ternary;
+                //hdr.ipv4.dst : ternary;
+                //hdr.tunnel.dst_id : ternary;
+                hdr.cacl.op : ternary;
+                //hdr.tcp.syn : ternary;
+                //hdr.nc.key : ternary;
+                //hdr.nc.op : ternary;
+                //hdr.rr.info: ternary;
+                //hdr.rr.time: exact;
+                ig_md.key.bitmap : exact;
+                //you can add or delete other field here
+            }
+            actions = {
+                set_filter6;
+                NoAction;
+            }
+            default_action = NoAction();
+        }
+
         apply {
-            tb_filter_setting.apply();
+            tb_filter_setting0.apply();
+            tb_filter_setting1.apply();
+            tb_filter_setting2.apply();
+            tb_filter_setting3.apply();
+            tb_filter_setting4.apply();
+            tb_filter_setting5.apply();
+            tb_filter_setting6.apply();
         }
 }
 
@@ -350,7 +199,15 @@ control HI(
         }
 
         table tb_hashed_index0_setting {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 //set_index0_hdripv4src;
                 set_index0_manually;
@@ -372,7 +229,15 @@ control HI(
         }
 
         table tb_hashed_index1_setting {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 set_index1_hdripv4src;
                 set_index1_manually;
@@ -392,7 +257,15 @@ control HI(
         }
 
         table tb_hashed_index2_setting {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 set_index2_hdripv4src;
                 set_index2_manually;
@@ -425,7 +298,15 @@ control AT(
         action rr3_add(bit<16> i) {ig_md.key.rr3_register_index = ig_md.key.hash_index0 + i;}
 
         table tb_rr1_index_shift {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 NoAction;
                 rr1_shift_1;
@@ -436,7 +317,15 @@ control AT(
         }
 
         table tb_rr1_index_add {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 NoAction;
                 rr1_add;
@@ -445,7 +334,15 @@ control AT(
         }
 
         table tb_rr2_index_shift {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 NoAction;
                 rr2_shift_1;
@@ -456,7 +353,15 @@ control AT(
         }
 
         table tb_rr2_index_add {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 NoAction;
                 rr2_add;
@@ -465,7 +370,15 @@ control AT(
         }
 
         table tb_rr3_index_shift {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 NoAction;
                 rr3_shift_1;
@@ -476,7 +389,15 @@ control AT(
         }
 
         table tb_rr3_index_add {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 NoAction;
                 rr3_add;
@@ -512,7 +433,15 @@ control PS(
         action set_3_hdrrrinfo() {ig_md.param.rr3_param1 = hdr.rr.info;}
 
         table tb_rr0_parameter_setting0 {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 set_0_0;
                 NoAction;
@@ -521,7 +450,15 @@ control PS(
         }
 
         table tb_rr0_parameter_setting1 {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 set_0_1;
                 NoAction;
@@ -530,7 +467,15 @@ control PS(
         }
 
         table tb_rr1_parameter_setting0 {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 set_1_0;
                 NoAction;
@@ -539,7 +484,15 @@ control PS(
         }
 
         table tb_rr1_parameter_setting1 {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 set_1_1;
                 set_1_hdripv4total_len;
@@ -549,7 +502,15 @@ control PS(
         }
 
         table tb_rr2_parameter_setting0 {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 set_2_0;
                 NoAction;
@@ -558,7 +519,15 @@ control PS(
         }
 
         table tb_rr2_parameter_setting1 {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 set_2_1;
                 set_2_hdripv4total_len;
@@ -568,7 +537,15 @@ control PS(
         }
 
         table tb_rr3_parameter_setting0 {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 set_3_0;
                 NoAction;
@@ -577,7 +554,15 @@ control PS(
         }
 
         table tb_rr3_parameter_setting1 {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 set_3_1;
                 set_3_hdripv4total_len;
@@ -620,7 +605,15 @@ control KS(
         //you can add other key here
 
         table tb_key_selection {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 hdripv4src_temp0;
                 hdripv4dst_temp0;
@@ -667,8 +660,13 @@ control HM(
 
         table tb_header_modifier {
             key = {
-                ig_md.key.filter : exact;
-                ig_md.key.lock : exact;
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
             }
             actions = {
 
@@ -765,7 +763,15 @@ control RR(
             ig_md.param.rr0_param1 = rr0_op_read_write.execute(ig_md.key.rr0_register_index);
         }
         table tb_rr0 {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 NoAction;
                 add_0_1_2;
@@ -790,8 +796,13 @@ control RR(
         }
         table tb_rr0_reg {
             key = {
-                ig_md.key.filter : exact;
-                ig_md.key.lock : exact;
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
             }
             actions = {
                 NoAction;
@@ -866,7 +877,15 @@ control RR(
             rr1_op_max.execute(ig_md.key.rr1_register_index);
         }
         table tb_rr1 {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 NoAction;
                 add_1_0_2;
@@ -880,8 +899,13 @@ control RR(
         }
         table tb_rr1_reg {
             key = {
-                ig_md.key.filter : exact;
-                ig_md.key.lock : exact; 
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
             }
             actions = {
                 NoAction;
@@ -957,7 +981,15 @@ control RR(
             rr2_op_max.execute(ig_md.key.rr2_register_index);
         }
         table tb_rr2 {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 NoAction;
                 add_2_0_1;
@@ -971,8 +1003,13 @@ control RR(
         }
         table tb_rr2_reg {
             key = {
-                ig_md.key.filter : exact;
-                ig_md.key.lock : exact;
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
             }
             actions = {
                 NoAction;
@@ -1048,7 +1085,15 @@ control RR(
             rr3_op_max.execute(ig_md.key.rr3_register_index);
         }
         table tb_rr3 {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 NoAction;
                 add_3_0_1;
@@ -1062,8 +1107,13 @@ control RR(
         }
         table tb_rr3_reg {
             key = {
-                ig_md.key.filter : exact;
-                ig_md.key.lock : exact;
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
             }
             actions = {
                 NoAction;
@@ -1104,9 +1154,9 @@ control SwitchIngress(
         PS() ps;
         KS() ks0;
         KS() ks1;
+        RR() rr;
         HM() hm0;
         HM() hm1;
-        RR() rr;
 
 
 
@@ -1135,22 +1185,6 @@ control SwitchIngress(
             hdr.rr.setInvalid();
         }
 
-        action set_lock_id(bit<16> lock_id) {
-            ig_md.key.lock_id = lock_id;
-        }
-
-
-        table tb_set_lock_id {
-            key = {ig_md.useless_key : exact;} // always match
-            actions = {
-                set_lock_id;
-                NoAction;
-            }
-            default_action = NoAction();
-            size = 1;
-        }
-
-
         table tb_forward {
             key = {ig_intr_md.ingress_port : exact;}
             actions = {
@@ -1161,7 +1195,15 @@ control SwitchIngress(
         }
 
         table tb_recirculate {
-            key = {ig_md.key.filter : exact;}
+            key = {
+                ig_md.key.filter0 : exact;
+                ig_md.key.filter1 : exact;
+                ig_md.key.filter2 : exact;
+                ig_md.key.filter3 : exact;
+                ig_md.key.filter4 : exact;
+                ig_md.key.filter5 : exact;
+                ig_md.key.filter6 : exact;
+            }
             actions = {
                 first_recirculate;
                 last_recirculate;
@@ -1173,10 +1215,8 @@ control SwitchIngress(
 
 
         apply {
-            tb_set_lock_id.apply();
-            tb_forward.apply();
+            //tb_forward.apply();
             fs0.apply(hdr, ig_md, ig_intr_md);
-            if (ig_md.key.lock_id == ig_md.key.filter) { ig_md.key.lock = 1; }
             hi.apply(hdr, ig_md);
             at.apply(hdr, ig_md);
             ps.apply(hdr, ig_md);

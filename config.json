@@ -1,0 +1,34 @@
+{
+    "headers" : ["ethernet", "ipv4", "tunnel", "cacl", "tcp", "udp", "nc", "rr"],
+    "parsing_logic": [
+        [ "ethernet", "ipv4", "tcp"],
+        [ "ethernet", "ipv4", "tcp", "rr"],
+        [ "ethernet", "ipv4", "udp"],
+        [ "ethernet", "ipv4", "udp", "rr"],
+        [ "ethernet", "ipv4", "udp", "nc"],
+        [ "ethernet", "tunnel"],
+        [ "ethernet", "cacl"]
+    ],
+    "bitmap" : [
+        "0B11001000",
+        "0B11001001",
+        "0B11000100",
+        "0B11000101",
+        "0B11000110",
+        "0B10100000",
+        "0B10010000"
+    ],
+    "filtering_field": [
+        [ "ig_intr_md.ingress_port", "hdr.ipv4.dst", "hdr.tcp.syn"],
+        [ "ig_intr_md.ingress_port", "hdr.ipv4.dst", "hdr.tcp.syn", "hdr.rr.info"],
+        [ "ig_intr_md.ingress_port", "hdr.ipv4.dst"],
+        [ "ig_intr_md.ingress_port", "hdr.ipv4.dst", "hdr.rr.info"],
+        [ "ig_intr_md.ingress_port", "hdr.ipv4.dst", "hdr.nc.key", "hdr.nc.op"],
+        [ "ig_intr_md.ingress_port", "hdr.tunnnel.dst_id"],
+        [ "ig_intr_md.ingress_port", "hdr.cacl.op"]
+    ],
+    "module_number": [1, 3, 2, 4, 2],
+    "module_size": 512,
+    "register_size": 65536,
+    "operation_set": ["add", "addi", "ass"]
+}

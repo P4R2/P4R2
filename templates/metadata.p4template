@@ -1,0 +1,40 @@
+//== Metadata definition
+
+struct temp_metadata_t {
+    {% for id in range(CONF["module_number"][3]) %}
+    bit<32> temp{{id}};
+    {% endfor %}
+}
+
+struct key_metadat_t {
+    {% for id in range(CONF["parsing_len"]) %}
+    bit<16> filter{{id}};
+    {% endfor %}
+
+    {% for id in range(CONF["module_number"][1]) %}
+    bit<16> hash_index{{id}};
+    {% endfor %}
+
+    {% for id in range(CONF["module_number"][3]-CONF["module_number"][1], CONF["module_number"][3]) %}
+    bit<16> rr{{id}}_register_index;
+    {% endfor %}
+
+    bit<8> bitmap;
+}
+
+struct param_metadata_t {
+    {% for id in range(CONF["module_number"][3]-CONF["module_number"][1], CONF["module_number"][3]) %}
+    bit<1> rr{{id}}_param0;
+    bit<32> rr{{id}}_param1;
+    {% endfor %}
+}
+
+struct ig_metadata_t {
+    temp_metadata_t temp;
+    key_metadat_t key;
+    param_metadata_t param;
+}
+
+struct eg_metadata_t {
+
+}

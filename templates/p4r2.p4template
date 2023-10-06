@@ -1,0 +1,659 @@
+#include <core.p4>
+#include <tna.p4>
+#include "parsers.p4"
+
+//== Control logic
+control FS(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md,
+        in ingress_intrinsic_metadata_t ig_intr_md) {
+
+        {% for id in range(CONF["parsing_len"]) %}
+        action set_filter{{id}}(bit<16> filterID) {ig_md.key.filter{{id}} = filterID;}
+        {% endfor %}
+
+        {% for id in range(CONF["parsing_len"]) %}
+        table tb_filter_setting{{id}} {
+            key = {
+                {% for f in CONF["filtering_field"][id] %}
+                {{f}} : ternary;
+                {% endfor %}
+                {% if "rr" in CONF["parsing_logic"][id] %}
+                hdr.rr.time : exact;
+                {% endif %}
+                ig_md.key.bitmap : exact;
+            }
+            actions = {
+                set_filter{{id}};
+                NoAction;
+            }
+            default_action = NoAction();
+            size = {{CONF["module_size"]}};
+        }
+        {% endfor %}
+
+        apply {
+            {% for id in range(CONF["parsing_len"]) %}
+            tb_filter_setting{{id}}.apply();
+            {% endfor %}
+        }
+}
+
+control HI(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md) {
+
+        {% for id in range(CONF["module_number"][1]) %}
+        //you can add or delete other field and hash_function here
+        Hash<bit<16>>(HashAlgorithm_t.CRC32) hash_{{id}};
+        action set_index{{id}}_5_tuple() {
+            ig_md.key.hash_index{{id}} = hash_{{id}}.get({hdr.ipv4.src, hdr.ipv4.dst, hdr.tcp.src_port, hdr.tcp.dst_port, hdr.ipv4.protocol});
+        }
+
+        action set_index{{id}}_manually(bit<16> index) {
+            ig_md.key.hash_index{{id}} = index;
+        }
+
+        table tb_hashed_index{{id}}_setting {
+            key = {
+                {% for id in range(CONF["parsing_len"]) %}
+                ig_md.key.filter{{id}} : exact;
+                {% endfor %}
+            }
+            actions = {
+                set_index{{id}}_manually;
+                set_index{{id}}_5_tuple;
+                NoAction;
+            }
+            default_action = NoAction();
+            size = {{CONF["module_size"]}};
+        }
+
+        {% endfor %}
+        apply {
+            {% for id in range(CONF["module_number"][1]) %}
+            tb_hashed_index{{id}}_setting.apply();
+            {% endfor %}
+        }
+}
+
+control AT(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md) {
+        
+        {% for id in range(CONF["module_number"][3]-CONF["module_number"][1], CONF["module_number"][3]) %}
+        action rr{{id}}_shift_1() {ig_md.key.hash_index{{id-(CONF["module_number"][3]-CONF["module_number"][1])}} = ig_md.key.hash_index{{id-(CONF["module_number"][3]-CONF["module_number"][1])}} >> 1;}
+        action rr{{id}}_shift_2() {ig_md.key.hash_index{{id-(CONF["module_number"][3]-CONF["module_number"][1])}} = ig_md.key.hash_index{{id-(CONF["module_number"][3]-CONF["module_number"][1])}} >> 2;}
+        action rr{{id}}_shift_3() {ig_md.key.hash_index{{id-(CONF["module_number"][3]-CONF["module_number"][1])}} = ig_md.key.hash_index{{id-(CONF["module_number"][3]-CONF["module_number"][1])}} >> 3;}
+        action rr{{id}}_add(bit<16> i) {ig_md.key.rr{{id}}_register_index = ig_md.key.hash_index{{id-(CONF["module_number"][3]-CONF["module_number"][1])}} + i;}
+
+        table tb_rr{{id}}_index_shift {
+            key = {
+                {% for j in range(CONF["parsing_len"]) %}
+                ig_md.key.filter{{j}} : exact;
+                {% endfor %}
+            }
+            actions = {
+                NoAction;
+                rr{{id}}_shift_1;
+                rr{{id}}_shift_2;
+                rr{{id}}_shift_3;
+            }
+            default_action = NoAction();
+            size = {{CONF["module_size"]}};
+        }
+
+        table tb_rr{{id}}_index_add {
+            key = {
+                {% for j in range(CONF["parsing_len"]) %}
+                ig_md.key.filter{{j}} : exact;
+                {% endfor %}
+            }
+            actions = {
+                NoAction;
+                rr{{id}}_add;
+            }
+            default_action = NoAction();
+            size = {{CONF["module_size"]}};
+        }
+
+        {% endfor %}
+        apply {
+            {% for id in range(CONF["module_number"][3]-CONF["module_number"][1], CONF["module_number"][3]) %}
+            tb_rr{{id}}_index_shift.apply();
+            tb_rr{{id}}_index_add.apply();
+            {% endfor %}
+        }
+}
+
+control PS(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md) {
+        
+        {% for id in range(CONF["module_number"][3]-CONF["module_number"][1], CONF["module_number"][3]) %}
+        //add other customized field->parameter here, i.g., action set_{{id}}_hdripv4total_len() {ig_md.param.rr{{id}}_param1 = (bit<32>)hdr.ipv4.total_len;}
+        action set_{{id}}_0(bit<1> p) {ig_md.param.rr{{id}}_param0 = p;}
+        action set_{{id}}_1(bit<32> p) {ig_md.param.rr{{id}}_param1 = p;}
+
+        table tb_rr{{id}}_parameter_setting0 {
+            key = {
+                {% for j in range(CONF["parsing_len"]) %}
+                ig_md.key.filter{{j}} : exact;
+                {% endfor %}
+            }
+            actions = {
+                set_{{id}}_0;
+                NoAction;
+            }
+            default_action = NoAction();
+            size = {{CONF["module_size"]}};
+        }
+
+        table tb_rr{{id}}_parameter_setting1 {
+            key = {
+                {% for j in range(CONF["parsing_len"]) %}
+                ig_md.key.filter{{j}} : exact;
+                {% endfor %}
+            }
+            actions = {
+                set_{{id}}_1;
+                NoAction;
+            }
+            default_action = NoAction();
+            size = {{CONF["module_size"]}};
+        }
+
+        {% endfor %}
+
+        apply {
+            {% for id in range(CONF["module_number"][3]-CONF["module_number"][1], CONF["module_number"][3]) %}
+            tb_rr{{id}}_parameter_setting0.apply();
+            tb_rr{{id}}_parameter_setting1.apply();
+            {% endfor %}
+        }
+}
+
+control KS(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md) {
+
+        {% for id in range(CONF["module_number"][3]) %}
+        action hdripv4src_temp{{id}}() {ig_md.temp.temp{{id}} = hdr.ipv4.src;}
+        action hdripv4dst_temp{{id}}() {ig_md.temp.temp{{id}} = hdr.ipv4.dst;}
+        {% endfor %} 
+        //add otther customized field->temp here, e.g., action ig_mdkeyhash_index0_temp0() {ig_md.temp.temp0 = (bit<32>)ig_md.key.hash_index0;}
+
+        table tb_key_selection {
+            key = {
+                {% for j in range(CONF["parsing_len"]) %}
+                ig_md.key.filter{{j}} : exact;
+                {% endfor %}
+            }
+            actions = {
+                {% for id in range(CONF["module_number"][3]) %}
+                hdripv4src_temp{{id}};
+                hdripv4dst_temp{{id}};
+                {% endfor %}
+                NoAction;
+            }
+            default_action = NoAction();
+            size = {{CONF["module_size"]}};
+        }
+        apply {
+            tb_key_selection.apply();
+        }
+}
+
+control HM(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md,
+        inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprsr_md,
+        inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md) {
+        
+        {% for id in range(CONF["module_number"][3]) %}
+        action hdripv4src_temp{{id}}() {hdr.ipv4.src = ig_md.temp.temp{{id}};}
+        action hdripv4dst_temp{{id}}() {hdr.ipv4.dst = ig_md.temp.temp{{id}};}
+        {% endfor %} 
+        //add otther customized temp->field here, e.g., action ig_intr_dprsr_mddrop_ctl_temp0() {ig_intr_dprsr_md.drop_ctl = (bit<3>)ig_md.temp.temp0;}
+
+        table tb_header_modifier {
+            key = {
+                {% for j in range(CONF["parsing_len"]) %}
+                ig_md.key.filter{{j}} : exact;
+                {% endfor %}
+            }
+            actions = {
+                {% for id in range(CONF["module_number"][3]) %}
+                hdripv4src_temp{{id}};
+                hdripv4dst_temp{{id}};
+                {% endfor %}
+                NoAction;
+            }
+            default_action = NoAction();
+            size = {{CONF["module_size"]}};
+        }
+        apply {
+            tb_header_modifier.apply();
+        }
+}
+
+control RR(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md) {
+        
+        {% for id in range(CONF["module_number"][3]) %}
+            {% for a in CONF["operation_set"] %}
+                {% if a == "ass" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% if i != id %}
+        action {{a}}_{{id}}_{{i}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}};}
+                        {% endif %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "not" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+        action {{a}}_{{id}}_{{i}}() {ig_md.temp.temp{{id}} = ~ig_md.temp.temp{{i}};}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "addi" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+        action {{a}}_{{id}}_{{i}}_i(bit<32> i) {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}} + i;}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "andi" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+        action {{a}}_{{id}}_{{i}}_i(bit<32> i) {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}} & i;}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "ori" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+        action {{a}}_{{id}}_{{i}}_i(bit<32> i) {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}} | i;}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "xori" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+        action {{a}}_{{id}}_{{i}}_i(bit<32> i) {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}} ^ i;}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "add" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+        action {{a}}_{{id}}_{{i}}_{{j}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}} + ig_md.temp.temp{{j}};}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "sub" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+        action {{a}}_{{id}}_{{i}}_{{j}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}} - ig_md.temp.temp{{j}};}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "mul" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+        action {{a}}_{{id}}_{{i}}_{{j}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}} * ig_md.temp.temp{{j}};}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "and" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+        action {{a}}_{{id}}_{{i}}_{{j}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}} & ig_md.temp.temp{{j}};}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "or" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+        action {{a}}_{{id}}_{{i}}_{{j}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}} | ig_md.temp.temp{{j}};}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "xor" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+        action {{a}}_{{id}}_{{i}}_{{j}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}} ^ ig_md.temp.temp{{j}};}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "lshift" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+        action {{a}}_{{id}}_{{i}}_{{j}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}} << ig_md.temp.temp{{j}};}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "rshift" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+        action {{a}}_{{id}}_{{i}}_{{j}}() {ig_md.temp.temp{{id}} = ig_md.temp.temp{{i}} >> ig_md.temp.temp{{j}};}
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+            {% endfor %}
+        
+        table tb_rr{{id}} {
+            key = {
+            {% for j in range(CONF["parsing_len"]) %}
+                ig_md.key.filter{{j}} : exact;
+            {% endfor %}
+            }
+            actions = {
+                NoAction;
+            {% for a in CONF["operation_set"] %}
+                {% if a == "ass" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% if i != id %}
+                {{a}}_{{id}}_{{i}};
+                        {% endif %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "not" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                {{a}}_{{id}}_{{i}};
+                    {% endfor %}
+                {% endif %}
+                {% if a == "addi" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                {{a}}_{{id}}_{{i}}_i;
+                    {% endfor %}
+                {% endif %}
+                {% if a == "andi" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                {{a}}_{{id}}_{{i}}_i;
+                    {% endfor %}
+                {% endif %}
+                {% if a == "ori" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                {{a}}_{{id}}_{{i}}_i;
+                    {% endfor %}
+                {% endif %}
+                {% if a == "xori" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                {{a}}_{{id}}_{{i}}_i;
+                    {% endfor %}
+                {% endif %}
+                {% if a == "add" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+                {{a}}_{{id}}_{{i}}_{{j}};
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "sub" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+                {{a}}_{{id}}_{{i}}_{{j}};
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "mul" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+                {{a}}_{{id}}_{{i}}_{{j}};
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "and" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+                {{a}}_{{id}}_{{i}}_{{j}};
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "or" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+                {{a}}_{{id}}_{{i}}_{{j}};
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "xor" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+                {{a}}_{{id}}_{{i}}_{{j}};
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "lshift" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+                {{a}}_{{id}}_{{i}}_{{j}};
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+                {% if a == "rshift" %}
+                    {% for i in range(CONF["module_number"][3]) %}
+                        {% for j in range(CONF["module_number"][3]) %}
+                            {% if i < j %}
+                {{a}}_{{id}}_{{i}}_{{j}};
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                {% endif %}
+            {% endfor %}
+            }
+            default_action = NoAction();
+            size = {{CONF["module_size"]}};
+        }
+
+            {% if id >= CONF["module_number"][3]-CONF["module_number"][1] %}
+        Register<bit<32>, _>(CONF["register_size"]) rr{{id}}_register;
+        RegisterAction<bit<32>, _, bit<32>>(rr{{id}}_register) rr{{id}}_op_add_sub = {
+            void apply(inout bit<32> value, out bit<32> result) {
+                if ( ig_md.param.rr{{id}}_param0 == 0) {
+                    value = value + ig_md.param.rr{{id}}_param1;
+                }
+                else {
+                    value = value - ig_md.param.rr{{id}}_param1;
+                }
+                result = value;
+            }
+        };
+
+        RegisterAction<bit<32>, _, bit<32>>(rr{{id}}_register) rr{{id}}_op_and_or = {
+            void apply(inout bit<32> value, out bit<32> result) {
+                if ( ig_md.param.rr{{id}}_param0 == 0) {
+                    value = value & ig_md.param.rr{{id}}_param1;
+                }
+                else {
+                    value = value | ig_md.param.rr{{id}}_param1;
+                }
+                result = value;
+            }
+        };
+
+        RegisterAction<bit<32>, _, bit<32>>(rr{{id}}_register) rr{{id}}_op_read_write = {
+            void apply(inout bit<32> value, out bit<32> result) {
+                if ( ig_md.param.rr{{id}}_param0 == 1) {
+                    value = ig_md.param.rr{{id}}_param1;
+                }
+                result = value;
+            }
+        };
+
+        action rr{{id}}_reg_op0() {
+            rr{{id}}_op_add_sub.execute(ig_md.key.rr{{id}}_register_index);
+        }
+        action rr{{id}}_reg_op1() {
+            rr{{id}}_op_and_or.execute(ig_md.key.rr{{id}}_register_index);
+        }
+        action rr{{id}}_reg_op2() {
+            ig_md.param.rr{{id}}_param1 = rr{{id}}_op_read_write.execute(ig_md.key.rr{{id}}_register_index);
+        }
+        action rr{{id}}_reg_op3() {
+            rr{{id}}_op_max.execute(ig_md.key.rr{{id}}_register_index);
+        }
+
+        table tb_rr{{id}}_reg {
+            key = {
+                {% for j in range(CONF["parsing_len"]) %}
+                ig_md.key.filter{{j}} : exact;
+                {% endfor %}
+            }
+            actions = {
+                NoAction;
+                rr{{id}}_reg_op0;
+                rr{{id}}_reg_op1;
+                rr{{id}}_reg_op2;
+                rr{{id}}_reg_op3;
+            }
+            default_action = NoAction();
+            size = {{CONF["module_size"]}};
+            size = {{CONF["module_size"]}};
+        }
+            {% endif %}
+        {% endfor %}
+
+        apply {
+            {% for id in range(CONF["module_number"][3]) %}
+            tb_rr{{id}}.apply();
+                {% if id >= CONF["module_number"][3]-CONF["module_number"][1]%}
+            tb_rr{{id}}_reg.apply();
+                {% endif %}
+            {% endfor %}
+        }
+
+}
+
+
+control SwitchIngress(
+        inout header_t hdr,
+        inout ig_metadata_t ig_md,
+        in ingress_intrinsic_metadata_t ig_intr_md,
+        in ingress_intrinsic_metadata_from_parser_t ig_intr_prsr_md,
+        inout ingress_intrinsic_metadata_for_deparser_t ig_intr_dprsr_md,
+        inout ingress_intrinsic_metadata_for_tm_t ig_intr_tm_md) {
+
+        FS() fs0;
+        HI() hi;
+        AT() at;
+        PS() ps;
+        {% for id in range(CONF["module_number"][2]) %}
+        KS() ks{{id}};
+        {% endfor%}
+        RR() rr;
+        {% for id in range(CONF["module_number"][4]) %}
+        HM() hm{{id}};
+        {% endfor%}
+
+        action forward(PortId_t port) {
+            ig_intr_tm_md.ucast_egress_port = port;
+        }
+
+        action first_recirculate() {
+            ig_intr_tm_md.ucast_egress_port = 68;
+            hdr.ipv4.rec = 1;
+            hdr.rr.setValid();
+            hdr.rr.time = 1;
+            hdr.rr.port = ig_intr_tm_md.ucast_egress_port;
+        }
+
+        action recirculate() {
+            hdr.rr.time = hdr.rr.time + 1;
+            ig_intr_tm_md.ucast_egress_port = 68;
+        }
+
+        action last_recirculate() {
+            ig_intr_tm_md.ucast_egress_port = hdr.rr.port;
+            hdr.ipv4.rec = 0;
+            hdr.rr.setInvalid();
+        }
+
+        table tb_forward {
+            key = {ig_intr_md.ingress_port : exact;}
+            actions = {
+                forward;
+                NoAction;
+            }
+            default_action = NoAction();
+            size = {{CONF["module_size"]}};
+        }
+
+        table tb_recirculate {
+            key = {
+                {% for j in range(CONF["parsing_len"]) %}
+                ig_md.key.filter{{j}} : exact;
+                {% endfor %}
+            }
+            actions = {
+                first_recirculate;
+                last_recirculate;
+                recirculate;
+                NoAction;
+            }
+            default_action = NoAction();
+            size = {{CONF["module_size"]}};
+        }
+
+
+        apply {
+            //tb_forward.apply();
+            fs0.apply(hdr, ig_md, ig_intr_md);
+            hi.apply(hdr, ig_md);
+            at.apply(hdr, ig_md);
+            ps.apply(hdr, ig_md);
+            {% for id in range(CONF["module_number"][2]) %}
+            ks{{id}}.apply(hdr, ig_md);
+            {% endfor %}
+            rr.apply(hdr, ig_md);
+            {% for id in range(CONF["module_number"][4]) %}
+            hm{{id}}.apply(hdr, ig_md, ig_intr_dprsr_md, ig_intr_tm_md);
+            {% endfor %}
+            tb_recirculate.apply();
+        }
+}
+
+control SwitchEgress(
+        inout header_t hdr,
+        inout eg_metadata_t ig_md,
+        in egress_intrinsic_metadata_t eg_intr_md,
+        in egress_intrinsic_metadata_from_parser_t eg_intr_md_from_prsr,
+        inout egress_intrinsic_metadata_for_deparser_t ig_intr_dprs_md,
+        inout egress_intrinsic_metadata_for_output_port_t eg_intr_oport_md) {
+        apply {
+
+        }
+
+}
+
+Pipeline(SwitchIngressParser(),
+         SwitchIngress(),
+         SwitchIngressDeparser(),
+         SwitchEgressParser(),
+         SwitchEgress(),
+         SwitchEgressDeparser()
+         ) pipe;
+
+Switch(pipe) main;

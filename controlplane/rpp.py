@@ -1,13 +1,22 @@
 import re
+import json
 
+def search_index(item, list):
+    for i in range(len(list)):
+        if item == list[i]:
+            return i
+    return -1
 
 class RPP():
-    file_path = None
-    f = None
-    p = 0
-    module_info = [0, 0, 0, 0, 0]
 
-    actions = 'ass|add|sub|mul|and|or|not|addi|andi|ori|xori|register_add|register_sub|register_and|register_or|register_read|register_write|register_max'
+    def __init__(self, config_path="../config.json"):
+        self.file_path = None
+        self.f = None
+        self.p = 0
+        with open(config_path, 'r') as fr:
+            self.config = json.load(fr)
+        #print(config)
+        self.actions = 'ass|add|sub|mul|and|or|not|addi|andi|ori|xori|register_add|register_sub|register_and|register_or|register_read|register_write|register_max' 
 
     def error(self, s, n=None):
         es = 'error:\t'
@@ -35,7 +44,7 @@ class RPP():
 
     def parse_FS(self, res):
         args = self.parse_primitive_arg(res.group(2))
-
+        '''
         pre0 = 'SwitchIngress.fs' + res.group(1) + '.'
         rt_info0 = [pre0 + 'tb_filter_setting']
         rt_info0.append((len(args)-3)/3)
@@ -46,6 +55,29 @@ class RPP():
         rt_info0.append('filterID')
         rt_info0.append(args[-1])
         rt_info0.append(pre0 + 'set_filter')
+        if self.d:
+            rt_info0.append('del')
+        '''
+        pre0 = 'SwitchIngress.fs' + res.group(1) + '.'
+        bitmap = self.config["bitmap"]
+        filtering_keys = self.config["filtering_field"]
+        filter_num = search_index(args[-2], bitmap)
+        rt_info0 = [pre0 + 'tb_filter_setting' + str(filter_num)]
+        rt_info0.append(filter_num)
+        for key in filtering_keys[filter_num]:
+            rt_info0.append(str(key))
+            if key in args: 
+                idx = search_index(key, args)
+                rt_info0.append(args[idx+1])
+                rt_info0.append(args[idx+2])
+            else:
+                rt_info0.append('0')
+                rt_info0.append('0')
+        rt_info0.append(args[-3])
+        rt_info0.append(args[-2])
+        rt_info0.append('filterID')
+        rt_info0.append(args[-1])
+        rt_info0.append(pre0 + 'set_filter' + str(filter_num))
         if self.d:
             rt_info0.append('del')
         return [rt_info0]

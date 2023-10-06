@@ -45,7 +45,7 @@ class P4R2Controller(cmd.Cmd):
         cmd.Cmd.__init__(self)
         try:
             #self.config = json.load(open(config_file, 'r'))
-            self.runtime = bfrt_runtime(0, 'p4r2_copy')
+            self.runtime = bfrt_runtime(0, 'p4r2')
             self.entry_dumper = entry_dumper(self.runtime)
             self.rpp = RPP()
         except Exception as e:

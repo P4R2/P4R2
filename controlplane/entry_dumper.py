@@ -20,14 +20,17 @@ def ipv4_to_byte_array(addr):
         
 
 class entry_dumper():
-    def __init__(self, p4r2_runtume):
+    def __init__(self, p4r2_runtume, config_path="../config.json"):
         self.runtime = p4r2_runtume
         self.entry_info = {}
+        with open(config_path, 'r') as fr:
+            self.config = json.load(fr)
+        self.filtering_dict = {"0" : -1}
 
     def entry_add(self, info, add=True):
 
         table_name = info[0]
-        if re.search(r'tb_filter_setting', info[0]):
+        if re.search(r'tb_filter_setting\d', info[0]):
             '''
             self.tb = self.bfrt_info.table_get(info[0])
 
@@ -47,7 +50,7 @@ class entry_dumper():
             annotation_list = []
 
             #predefined key_list
-            #TODO: rewrite with P4R2 compiler
+            #Future: rewrite with P4R2 compiler
             '''
             ig_intr_md.ingress_port : ternary;
             hdr.ipv4.dst : ternary;
@@ -61,7 +64,7 @@ class entry_dumper():
             ig_md.key.bitmap : exact;
             '''
 
-
+            '''
             key_list = [
                 #['ig_intr_md.ingress_port', 0, 0, 'ternary'],
                 ['hdr.ipv4.dst', 0, 0, 'ternary'],
@@ -97,17 +100,33 @@ class entry_dumper():
             #key_list[9][1] = int(info[-4], 2)
 
             key_list[1][1] = int(info[-4], 2)
+            '''
 
-            print(key_list)
+            #print(info)
+
+            for i in range((len(info)-7)/3):
+                if re.match(r'(\d+)\.(\d+)\.(\d+)\.(\d+)', info[3 + 3*i]):
+                    annotation_list.append([info[2 + 3*i], "ipv4"])
+                    key_list.append([info[2+3*i], info[3+3*i], info[4+3*i], "ternary"])
+                else:
+                    key_list.append([info[2+3*i], int(info[3+3*i]), int(info[4+3*i]), "ternary"])
+            
+            if int(info[-5]) > 0:
+                key_list.append(["hdr.rr.time", int(info[-5]), "exact"])
+            key_list.append(['ig_md.key.bitmap', int(info[-4], 2), "exact"])
+
+            #print(key_list)
             data_list = [[[info[-3], int(info[-2])]], info[-1]]
 
             if add:
+                self.filtering_dict[info[-2]] = info[1]
                 self.runtime.entry_add(table_name, key_list, data_list, annotation_list)
                 if self.entry_info.get(table_name) is None:
                     self.entry_info[table_name] = [key_list]
                 else:
                     self.entry_info[table_name].append(key_list)
             else:
+                self.filtering_dict.pop(info[-2])
                 self.runtime.entry_del(table_name, key_list, annotation_list)
                 self.entry_info[table_name].remove(key_list)
                 
@@ -134,7 +153,8 @@ class entry_dumper():
                 self.tb.entry_del(self.switch_target, key_list)
             '''
 
-            key_list = [['ig_md.key.filter', int(info[1]), "exact"]]
+            key_list = [['ig_md.key.filter'+ str(i), 0, "exact"] for i in range(len(self.config["parsing_logic"]))]
+            key_list[self.filtering_dict[info[1]]][1] = int(info[1])
             data_list = []
 
             if 'index' in info:
@@ -168,7 +188,8 @@ class entry_dumper():
                 self.tb.entry_del(self.switch_target, key_list)
             '''
 
-            key_list = [['ig_md.key.filter', int(info[1]), "exact"]]
+            key_list = [['ig_md.key.filter'+ str(i), 0, "exact"] for i in range(len(self.config["parsing_logic"]))]
+            key_list[self.filtering_dict[info[1]]][1] = int(info[1])
             data_list = [[], info[2]]
 
             if add:
@@ -195,10 +216,11 @@ class entry_dumper():
             else:
                 self.tb.entry_del(self.switch_target, key_list)
             '''
-
-            key_list = [['ig_md.key.filter', int(info[1]), "exact"]]
+            print(info)
+            key_list = [['ig_md.key.filter'+ str(i), 0, "exact"] for i in range(len(self.config["parsing_logic"]))]
+            key_list[self.filtering_dict[info[1]]][1] = int(info[1])
             data_list = [[[info[2], int(info[3])]], info[4]]
-
+            print(key_list)
             if add:
                 self.runtime.entry_add(table_name, key_list, data_list)
                 if self.entry_info.get(table_name) is None:
@@ -225,7 +247,8 @@ class entry_dumper():
                 self.tb.entry_del(self.switch_target, key_list)
             '''
 
-            key_list = [['ig_md.key.filter', int(info[1]), "exact"]]
+            key_list = [['ig_md.key.filter'+ str(i), 0, "exact"] for i in range(len(self.config["parsing_logic"]))]
+            key_list[self.filtering_dict[info[1]]][1] = int(info[1])
             data_list = [[], info[2]]
 
             if add:
@@ -256,7 +279,8 @@ class entry_dumper():
                 self.tb.entry_del(self.switch_target, key_list)
             '''
 
-            key_list = [['ig_md.key.filter', int(info[1]), "exact"]]
+            key_list = [['ig_md.key.filter'+ str(i), 0, "exact"] for i in range(len(self.config["parsing_logic"]))]
+            key_list[self.filtering_dict[info[1]]][1] = int(info[1])
             data_list = []
 
             if len(info) >= 5:
@@ -289,7 +313,8 @@ class entry_dumper():
                 self.tb.entry_del(self.switch_target, key_list)
             '''
 
-            key_list = [['ig_md.key.filter', int(info[1]), "exact"]]
+            key_list = [['ig_md.key.filter'+ str(i), 0, "exact"] for i in range(len(self.config["parsing_logic"]))]
+            key_list[self.filtering_dict[info[1]]][1] = int(info[1])
             data_list = [[], info[2]]
 
             if add:
@@ -319,7 +344,8 @@ class entry_dumper():
                 self.tb.entry_del(self.switch_target, key_list)
             '''
 
-            key_list = [['ig_md.key.filter', int(info[1]), "exact"], ['ig_md.key.lock', 0, "exact"]]
+            key_list = [['ig_md.key.filter'+ str(i), 0, "exact"] for i in range(len(self.config["parsing_logic"]))]
+            key_list[self.filtering_dict[info[1]]][1] = int(info[1])
             data_list = [[], info[2]]
 
             if add:
@@ -348,7 +374,8 @@ class entry_dumper():
                 self.tb.entry_del(self.switch_target, key_list)
             '''
 
-            key_list = [['ig_md.key.filter', int(info[1]), "exact"]]
+            key_list = [['ig_md.key.filter'+ str(i), 0, "exact"] for i in range(len(self.config["parsing_logic"]))]
+            key_list[self.filtering_dict[info[1]]][1] = int(info[1])
             if len(info) == 3:
                 data_list = [[], info[2]]
             else:
@@ -379,7 +406,8 @@ class entry_dumper():
                 self.tb.entry_del(self.switch_target, key_list)
             '''
 
-            key_list = [['ig_md.key.filter', int(info[1]), "exact"]]
+            key_list = [['ig_md.key.filter'+ str(i), 0, "exact"] for i in range(len(self.config["parsing_logic"]))]
+            key_list[self.filtering_dict[info[1]]][1] = int(info[1])
             data_list = [[], info[2]]
 
             if add:
