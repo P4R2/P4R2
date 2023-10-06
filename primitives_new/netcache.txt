@@ -1,9 +1,0 @@
-FS0.filter_setting(hdr.nc.op, 0, 255, hdr.nc.key, 123, 4294967295, 0, 0B11000110, 20)
-IS0.index_setting_manually(123, 20)
-AR3.register_read(1, 20)
-HM0.header_modifier(hdr.nc.value, ig_md.param.rr3_param1, 20)
-
-
-FS0.filter_setting(hdr.nc.op, 1, 255, hdr.nc.key, 123, 4294967295, 0, 0B11000110, 21)
-IS0.index_setting_manually(123, 21)
-AR3.register_write(hdr.nc.value, 21)
